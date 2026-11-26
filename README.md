@@ -18,7 +18,16 @@ The original pipeline served **100+ Amazon seller accounts across 8 marketplaces
 | Reports sent whatever the data looks like | No quality checks: a missing report becomes a row of zeros in a client's inbox |
 | Daily and weekly logic copied in separate scripts | The two drift apart over time |
 
-**Scope:** this project rebuilds the **Client Performance Reports** (daily and weekly, product level). Their sources are the Sponsored Products and Sponsored Display **advertised product** reports, the **business report**, the **orders** report, the **FBA inventory** report and the **inventory health** report. The separate MIS management report (campaign level: SP/SB/SD campaign reports plus orders) is out of scope here.
+**Scope:** this project rebuilds the **Client Performance Reports** (daily and weekly, product level). Their sources:
+
+| Report | Weekly | Daily |
+|---|:---:|:---:|
+| Sponsored Products + Sponsored Display **advertised product** (product reports) | ✅ | ✅ |
+| **Business report** (sessions, revenue, units) | ✅ | |
+| **Orders** report (revenue, units) | | ✅ |
+| **FBA inventory** + **inventory health** (inventory reports) | ✅ | ✅ |
+
+The separate MIS management report (campaign level: SP/SB/SD campaign reports plus orders) is out of scope here.
 
 This rebuild turns it into a proper **ELT platform**: raw data lands untouched, a warehouse holds the history, dbt owns the business logic as tested SQL, and Airflow runs everything on schedule with a quality gate before anything reaches a client.
 
