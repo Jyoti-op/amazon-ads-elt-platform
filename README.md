@@ -10,7 +10,7 @@
 
 The original pipeline served **100+ Amazon seller accounts across 8 marketplaces** with plain Python scripts:
 
-| Today (scripts) | Problem |
+| Original scripts | Problem |
 |---|---|
 | Each script run by hand or cron, one after another | No dependency tracking: if step 2 fails, step 3 still runs on stale files |
 | 600-line pandas script merges 5 reports into Excel | Business logic hidden in code, hard to test or change |
@@ -33,18 +33,17 @@ This rebuild turns it into a proper **ELT platform**: raw data lands untouched, 
 
 ---
 
-## Target architecture
+## Architecture
 
 ```mermaid
 flowchart LR
     subgraph SRC["Sources"]
         A1["Amazon Ads API<br/>SP · SD advertised product"]
         A2["Selling Partner API<br/>business report · orders<br/>FBA inventory · inventory health"]
-        G["Demo data generator<br/>(exact Amazon schemas)"]
     end
 
     subgraph LAND["Raw landing zone"]
-        R[("Parquet<br/>report / client / dt=YYYY-MM-DD")]
+        R[("Parquet<br/>report / cadence / client / period")]
     end
 
     subgraph WH["Warehouse"]
@@ -59,7 +58,7 @@ flowchart LR
         T["Team summary"]
     end
 
-    A1 & A2 & G -->|extract| R
+    A1 & A2 -->|extract| R
     R -->|load| RAW
     RAW -->|dbt| STG -->|dbt| MART
     MART --> S --> E
@@ -76,12 +75,11 @@ flowchart LR
 |---|---|---|
 | **Extract** | Python (requests, pandas) | Amazon async reports: request → poll → download → normalise |
 | **Raw storage** | Parquet on local disk / S3 | Cheap, columnar, partitioned by report, client and date |
-| **Warehouse** | **DuckDB** (default, free) · **Snowflake** (switchable target) | Same dbt project runs on both; DuckDB for dev and CI at $0, Snowflake for production-style demo |
+| **Warehouse** | **DuckDB** (default, free) · **Snowflake** (switchable target) | Same dbt project runs on both: DuckDB locally at no cost, Snowflake as the cloud warehouse |
 | **Transform** | **dbt** | Business logic as version-controlled SQL with tests, docs and lineage |
 | **Orchestration** | **Apache Airflow** | Scheduled DAGs, retries, per-client task mapping, alerting, run history |
 | **Delivery** | Google Sheets API, SMTP / Gmail | Clients keep receiving reports where they already look |
 | **Packaging** | **Docker Compose** | One command starts Airflow + the whole pipeline |
-| **CI (next)** | **GitHub Actions** | Lint, unit tests and a full `dbt build` on every change |
 | **Quality** | dbt tests, source freshness | Bad data blocks delivery instead of reaching clients |
 
 ---
@@ -205,7 +203,7 @@ build_reference ─▶ extract ─▶ load_raw ─▶ dbt_seed ─▶ dbt_snapsh
 ## Repository layout (private source)
 
 ```
-├── ingestion/          # Ads API + SP-API fetchers, demo data generator, raw landing, seed builder
+├── ingestion/          # Ads API + SP-API fetchers, raw landing, seed builder
 ├── loaders/            # raw Parquet → warehouse raw schema (DuckDB rebuild / Snowflake upsert)
 ├── dbt/                # staging, intermediate, marts, macros, seeds, snapshot, tests
 ├── reporting/          # quality-gated delivery: Excel workbook, Google Sheets, email
