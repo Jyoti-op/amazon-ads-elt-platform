@@ -165,18 +165,6 @@ flowchart LR
 | Source freshness on every raw table | a fetcher that silently stopped |
 | Weekly ad sales not far above total sales (warning) | a missing or partial business report |
 
-### Fixes over the original scripts
-
-| Original behaviour | Rebuild |
-|---|---|
-| Daily conversion rate always 0 (sessions hardcoded to 0) | Sessions null when unknown, so conversion rate reads n/a instead of a false 0% |
-| ASINs missing from the category file silently dropped | Kept as `Unknown`, plus a test that totals reconcile |
-| Daily and weekly scripts read different inventory-age columns | One normalised layout |
-| A missing report became a row of zeros in the client's inbox | Readiness gate: the client is flagged to the team, not sent |
-| Year guessed from `MM-DD` file names | Full ISO dates everywhere |
-| Week number was ISO week + 1 | True ISO week |
-| Per-account rules hardcoded as `if/elif` | Per-client config |
-
 ---
 
 ## Reports delivered
@@ -214,16 +202,6 @@ build_reference ─▶ extract ─▶ load_raw ─▶ dbt_seed ─▶ dbt_snapsh
 
 ---
 
-## Demo mode: no real client data
-
-- A **data generator** produces realistic Amazon Ads and SP-API reports in the exact production column formats for fictional brands, including late-arriving attribution so the 14-day logic has something to correct. It is deterministic: the same inputs always give the same data.
-- **Demo delivery never sends email.** Each client email is written to an outbox folder as an `.eml` file that opens in any mail app.
-- **Live mode** (real Amazon APIs, real recipients) is the same code with one setting, `PIPELINE_MODE=live`.
-
-No credentials are stored in code; everything is read from a git-ignored `.env` and secrets file.
-
----
-
 ## Repository layout (private source)
 
 ```
@@ -236,28 +214,6 @@ No credentials are stored in code; everything is read from a git-ignored `.env` 
 ├── run.py              # whole pipeline in order, without Airflow
 └── docker-compose.yml  # Airflow + Postgres
 ```
-
----
-
-## Roadmap
-
-- [x] **Phase 1: Ingestion.** Live fetchers for all six reports with retry rounds and token refresh; demo generator in the exact Amazon schemas; partitioned raw Parquet landing
-- [x] **Phase 2: Warehouse + dbt.** Raw load to DuckDB; staging, intermediate and mart models; metric macros; data tests; SCD2 snapshot
-- [x] **Phase 3: Reporting.** Quality-gated delivery: Excel workbook (ASIN · Latest · Category), Google Sheets, email summary vs previous period
-- [x] **Phase 4: Orchestration.** Airflow daily and weekly DAGs with dbt as the quality gate and one mapped task per client, in Docker
-- [x] **Phase 5: Snowflake.** Switchable Snowflake target (raw upsert + same dbt project)
-- [ ] **Phase 6: Run evidence.** dbt docs and lineage graph, sample report screenshots, Airflow run history
-- [ ] **Phase 7: CI.** Automated lint, unit tests and `dbt build` on every change
-
----
-
-## Cost
-
-| Component | Cost |
-|---|---|
-| DuckDB, dbt Core, Airflow, Docker, GitHub Actions | Free |
-| Google Sheets / Drive API, Gmail SMTP | Free within normal limits |
-| Snowflake | Free 30-day trial, then pay-per-use (optional; DuckDB covers everything else) |
 
 ---
 
