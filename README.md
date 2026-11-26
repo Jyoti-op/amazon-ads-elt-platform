@@ -18,6 +18,8 @@ The original pipeline served **100+ Amazon seller accounts across 8 marketplaces
 | Reports sent whatever the data looks like | No quality checks: a missing report becomes a row of zeros in a client's inbox |
 | Daily and weekly logic copied in separate scripts | The two drift apart over time |
 
+**Scope:** this project rebuilds the **Client Performance Reports** (daily and weekly, product level). Their sources are the Sponsored Products and Sponsored Display **advertised product** reports, the **business report**, the **orders** report, the **FBA inventory** report and the **inventory health** report. The separate MIS management report (campaign level: SP/SB/SD campaign reports plus orders) is out of scope here.
+
 This rebuild turns it into a proper **ELT platform**: raw data lands untouched, a warehouse holds the history, dbt owns the business logic as tested SQL, and Airflow runs everything on schedule with a quality gate before anything reaches a client.
 
 ---
@@ -27,8 +29,8 @@ This rebuild turns it into a proper **ELT platform**: raw data lands untouched, 
 ```mermaid
 flowchart LR
     subgraph SRC["Sources"]
-        A1["Amazon Ads API<br/>SP · SD reports"]
-        A2["Selling Partner API<br/>sales · traffic · FBA"]
+        A1["Amazon Ads API<br/>SP · SD advertised product"]
+        A2["Selling Partner API<br/>business report · orders<br/>FBA inventory · inventory health"]
         G["Demo data generator<br/>(exact Amazon schemas)"]
     end
 
@@ -85,6 +87,7 @@ flowchart LR
         r3[raw_business_report]
         r4[raw_fba_inventory]
         r5[raw_inventory_health]
+        r6[raw_orders]
     end
     subgraph seeds
         s1[clients]
@@ -96,6 +99,7 @@ flowchart LR
         t3[stg_business_report]
         t4[stg_fba_inventory]
         t5[stg_inventory_health]
+        t6[stg_orders]
     end
     subgraph intermediate
         i1["int_asin_daily<br/>(incremental, 14-day lookback)"]
@@ -108,8 +112,8 @@ flowchart LR
         d1[dim_asin]
         d2[dim_client]
     end
-    r1-->t1; r2-->t2; r3-->t3; r4-->t4; r5-->t5
-    t1 & t2 & t3 & t4 & t5 --> i1
+    r1-->t1; r2-->t2; r3-->t3; r4-->t4; r5-->t5; r6-->t6
+    t1 & t2 & t3 & t4 & t5 & t6 --> i1
     s2 --> i1
     i1 --> m1 --> m2
     m1 --> m3 --> m4
@@ -119,7 +123,7 @@ flowchart LR
 
 | Model | Grain | Key metrics |
 |---|---|---|
-| `fct_asin_daily` | client · marketplace · ASIN · day | impressions, clicks, ad spend, ad sales, ad units, sessions, revenue, total units, stock |
+| `fct_asin_daily` | client · marketplace · ASIN · day | impressions, clicks, ad spend, ad sales, ad units, sessions, revenue, total units, orders, stock |
 | `fct_asin_weekly` | client · marketplace · ASIN · ISO week | the same, summed by week |
 | `fct_category_daily` / `weekly` | client · category · day / week | category roll-ups |
 | `dim_asin` | ASIN | category, price, inventory age (snapshot history) |
@@ -207,7 +211,7 @@ No credentials are ever committed; everything is read from a local `.env`.
 
 ## Roadmap
 
-- [ ] **Phase 1: Ingestion.** Demo data generator in exact Amazon schemas; extract step writing partitioned Parquet
+- [ ] **Phase 1: Ingestion.** Demo data generator in exact Amazon schemas for all six reports (SP and SD advertised product, business report, orders, FBA inventory, inventory health); extract step writing partitioned Parquet
 - [ ] **Phase 2: Warehouse + dbt.** Raw load to DuckDB; staging, intermediate and mart models; metric macros; tests; snapshots; docs and lineage
 - [ ] **Phase 3: Reporting.** Google Sheets writer and email builder for daily and weekly reports
 - [ ] **Phase 4: Orchestration.** Airflow daily and weekly DAGs with quality gate and per-client mapping, running in Docker
