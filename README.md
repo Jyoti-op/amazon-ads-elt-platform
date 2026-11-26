@@ -1,8 +1,8 @@
 # Amazon Ads ELT Platform: Daily & Weekly Client Reporting
 
-**A modern data-engineering rebuild of a production Amazon Ads reporting pipeline**: Snowflake / DuckDB, dbt, Airflow, Docker and GitHub Actions, delivering daily and weekly performance reports to clients through Google Sheets and email.
+**A modern data-engineering rebuild of a production Amazon Ads reporting pipeline**: Snowflake / DuckDB, dbt, Airflow and Docker, delivering daily and weekly performance reports to clients through Google Sheets and email.
 
-> **Status: 🚧 planned, build in progress.** This README is the project plan and design. Sections are ticked off in the [roadmap](#roadmap) as each phase lands.
+> **Status: ✅ Implemented.** Extraction, warehouse load, dbt models and tests, quality-gated delivery and Airflow orchestration are built (~2,100 lines of Python and SQL). The source code is kept private; this repository documents the design. A code walkthrough is available on request.
 
 ---
 
@@ -81,7 +81,7 @@ flowchart LR
 | **Orchestration** | **Apache Airflow** | Scheduled DAGs, retries, per-client task mapping, alerting, run history |
 | **Delivery** | Google Sheets API, SMTP / Gmail | Clients keep receiving reports where they already look |
 | **Packaging** | **Docker Compose** | One command starts Airflow + the whole pipeline |
-| **CI/CD** | **GitHub Actions** | Lint, unit tests and a full `dbt build` on every push |
+| **CI (next)** | **GitHub Actions** | Lint, unit tests and a full `dbt build` on every change |
 | **Quality** | dbt tests, source freshness | Bad data blocks delivery instead of reaching clients |
 
 ---
@@ -90,62 +90,92 @@ flowchart LR
 
 ```mermaid
 flowchart LR
-    subgraph raw
-        r1[raw_sp_advertised_product]
-        r2[raw_sd_advertised_product]
-        r3[raw_business_report]
-        r4[raw_fba_inventory]
-        r5[raw_inventory_health]
-        r6[raw_orders]
+    subgraph raw["raw (as landed, all text)"]
+        r1[sp_advertised_product]
+        r2[sd_advertised_product]
+        r3[business_report]
+        r4[orders]
+        r5[fba_inventory]
+        r6[inventory_health]
+        r7[landing_manifest]
     end
-    subgraph seeds
+    subgraph seeds["reference seeds (generated from config)"]
         s1[clients]
-        s2[asin_category]
+        s2[client_required_reports]
+        s3["asin_categories<br/>(long format: any number of levels)"]
     end
     subgraph staging
         t1[stg_sp_advertised_product]
         t2[stg_sd_advertised_product]
         t3[stg_business_report]
-        t4[stg_fba_inventory]
-        t5[stg_inventory_health]
-        t6[stg_orders]
+        t4[stg_orders]
+        t5[stg_fba_inventory]
+        t6[stg_inventory_health]
     end
     subgraph intermediate
-        i1["int_asin_daily<br/>(incremental, 14-day lookback)"]
+        i1["int_ads_by_asin<br/>SP + SD"]
+        i2["int_sales_by_asin<br/>business report (weekly) · orders (daily)"]
+        i3["int_inventory_by_asin<br/>stock + inventory age"]
     end
     subgraph marts
-        m1[fct_asin_daily]
-        m2[fct_asin_weekly]
-        m3[fct_category_daily]
-        m4[fct_category_weekly]
-        d1[dim_asin]
-        d2[dim_client]
+        m1["fct_asin_performance<br/>(incremental, 14-day lookback)"]
+        m2["fct_category_performance<br/>(every category level)"]
+        m3["report_readiness<br/>(quality gate)"]
     end
+    snap[("snp_asin_categories<br/>SCD Type 2")]
     r1-->t1; r2-->t2; r3-->t3; r4-->t4; r5-->t5; r6-->t6
-    t1 & t2 & t3 & t4 & t5 & t6 --> i1
-    s2 --> i1
-    i1 --> m1 --> m2
-    m1 --> m3 --> m4
-    s1 --> d2
-    s2 --> d1
+    t1 & t2 --> i1
+    t3 & t4 --> i2
+    t5 & t6 --> i3
+    i1 & i2 & i3 --> m1
+    s1 & s3 --> m1
+    m1 --> m2
+    s3 --> m2
+    r7 & s2 --> m3
+    s3 --> snap
 ```
 
-| Model | Grain | Key metrics |
+| Model | Grain | What it holds |
 |---|---|---|
-| `fct_asin_daily` | client · marketplace · ASIN · day | impressions, clicks, ad spend, ad sales, ad units, sessions, revenue, total units, orders, stock |
-| `fct_asin_weekly` | client · marketplace · ASIN · ISO week | the same, summed by week |
-| `fct_category_daily` / `weekly` | client · category · day / week | category roll-ups |
-| `dim_asin` | ASIN | category, price, inventory age (snapshot history) |
-| `dim_client` | client · marketplace | report settings, recipients, active flag |
+| `fct_asin_performance` | client · cadence · period · ASIN | impressions, clicks, ad spend (SP / SD split), ad sales, ad units, revenue, total units, sessions, stock, reserved, inventory 90+ / 180+, ACOS, TACOS, CTR, CPC, conversion rate, ISO week |
+| `fct_category_performance` | client · cadence · period · category level · category | the same metrics rolled up, ratios recalculated from totals |
+| `report_readiness` | client · cadence · period | required vs landed reports, `is_ready`, list of missing reports |
+| `snp_asin_categories` | client · ASIN · category level, over time | category mapping history (valid from / to) |
 
-**Metrics are defined once, as dbt macros:** ACOS, TACOS, CTR, CPC, conversion rate, all with safe division. Daily and weekly reports use the same definitions, so they can never disagree.
+**Metrics are defined once, as dbt macros:** ACOS, TACOS, CTR, CPC and conversion rate, all with safe division that returns *null* (not 0) when there is nothing to divide by. Daily, weekly, ASIN and category numbers always use the same definitions.
 
-### Engineering details planned
+### Engineering details
 
-- **Incremental loads with a 14-day lookback.** Amazon keeps attributing sales to ad clicks for up to 14 days. Each run reprocesses only the last 14 days and merges them in, so recent numbers settle without rebuilding history.
-- **Snapshots (SCD Type 2).** Category and price changes per ASIN are kept as history, so old reports can be reproduced exactly.
-- **Idempotent everything.** Re-running a day or week replaces it; nothing is ever duplicated.
-- **Per-client account rules as data, not code.** Which reports each account needs (some have no FBA, some have no SD) lives in a seed table instead of `if/elif` branches.
+- **Incremental model with a 14-day lookback.** Amazon keeps attributing sales to ad clicks for up to 14 days. Daily runs re-pull and reprocess the last 14 days with a delete-and-insert merge, so recent numbers settle without rebuilding history.
+- **Snapshots (SCD Type 2).** Category mapping changes are kept as history, so past reports can be reproduced exactly.
+- **Idempotent everything.** Raw files are written one per report, client, cadence and period; warehouse tables are keyed the same way. Re-running a day or week replaces it.
+- **Per-client rules as data, not code.** Which reports each account needs (some have no Sponsored Display, some no FBA) lives in a config file, generated into a seed.
+- **Schema drift handled at landing.** Amazon has shipped two inventory-age layouts; both are normalised before loading.
+- **One codebase, two warehouses.** The same dbt project targets DuckDB (free, local) or Snowflake, with cross-database macros where SQL differs.
+
+### Data tests
+
+| Test | Catches |
+|---|---|
+| One row per client · cadence · period · ASIN | duplicate loads |
+| Category totals equal ASIN totals, for every category level | ASINs dropped or double counted in roll-ups |
+| Spend and revenue never negative | bad casts or broken source data |
+| Accepted values for cadence, sales source and report names | config typos |
+| Every fact row's client exists in the client list | orphan data |
+| Source freshness on every raw table | a fetcher that silently stopped |
+| Weekly ad sales not far above total sales (warning) | a missing or partial business report |
+
+### Fixes over the original scripts
+
+| Original behaviour | Rebuild |
+|---|---|
+| Daily conversion rate always 0 (sessions hardcoded to 0) | Sessions null when unknown, so conversion rate reads n/a instead of a false 0% |
+| ASINs missing from the category file silently dropped | Kept as `Unknown`, plus a test that totals reconcile |
+| Daily and weekly scripts read different inventory-age columns | One normalised layout |
+| A missing report became a row of zeros in the client's inbox | Readiness gate: the client is flagged to the team, not sent |
+| Year guessed from `MM-DD` file names | Full ISO dates everywhere |
+| Week number was ISO week + 1 | True ISO week |
+| Per-account rules hardcoded as `if/elif` | Per-client config |
 
 ---
 
@@ -154,79 +184,70 @@ flowchart LR
 | | **Daily report** | **Weekly report** |
 |---|---|---|
 | **Schedule** | Every day, 06:00 UTC | Every Monday, 06:00 UTC |
-| **Period** | Yesterday (with 14-day correction of recent days) | Last full ISO week |
-| **Google Sheet tabs** | `Daily ASIN`, `Daily Category` (rolling history) | `Weekly ASIN`, `Weekly Category` (one block per week) |
-| **Email** | Short summary: spend, sales, ACOS, TACOS vs previous day, top movers | Week-over-week summary, top and bottom ASINs, category table, sheet link |
-| **Same week / day re-run** | Replaces that day | Replaces that week |
-| **Recipients** | From `clients` seed, per client | Same |
+| **Period** | Yesterday, plus a 14-day re-pull so late-attributed sales settle | Last full Monday–Sunday week |
+| **Sales source** | Orders report | Business report (with sessions) |
+| **Workbook** | `<client>_daily_report.xlsx` | `<client>_weekly_report.xlsx` |
+| **Sheets** | `ASIN` (full history) · `Latest` (this period, by ad spend) · `Category` (every category level, TOTAL row first) | same |
+| **Email** | Ad spend, ad sales and revenue vs the previous period, ACOS, TACOS, top 5 products by ad spend, workbook attached | same, week over week |
+| **Google Sheets** | Optional mirror of `Latest` and `Category` per client | same |
+| **Re-run** | Replaces that day | Replaces that week |
 
 ---
 
 ## Airflow DAGs
 
 ```
-ads_daily_pipeline   (0 6 * * *)          ads_weekly_pipeline   (0 6 * * MON)
-──────────────────────────────            ───────────────────────────────
-extract_reports  [per report type]        wait_for_daily_success
-      │                                         │
-load_raw                                  dbt_build  --select +fct_*_weekly
-      │                                         │
-dbt_source_freshness                      dbt_test   (quality gate)
-      │                                         │
-dbt_build  --select +fct_*_daily          write_google_sheets  [per client]
-      │                                         │
-dbt_test   (quality gate)                 send_client_email    [per client]
-      │                                         │
-write_google_sheets  [per client]         notify_team
-      │
-send_client_email    [per client]
-      │
-notify_team
+ads_daily_report  (0 6 * * *)   ·   ads_weekly_report  (0 6 * * 1)
+
+build_reference ─▶ extract ─▶ load_raw ─▶ dbt_seed ─▶ dbt_snapshot ─▶ dbt_build (models + tests)
+                                                                          │
+                                                       clients_to_deliver ─▶ deliver_client [mapped: one per client]
+                                                                          │
+                                                                    team_summary
 ```
 
-- **Quality gate.** If any dbt test fails (duplicate rows, missing day, negative spend, ACOS out of range, stale source), client delivery is skipped and the team is alerted.
-- **Dynamic task mapping.** One sheet task and one email task per client, so one failing client never blocks the rest and only the failure is retried.
-- **Retries and alerts** on every task; full run history in the Airflow UI.
+- **dbt is the quality gate.** If any model or test fails in `dbt_build`, nothing downstream runs and no client receives a report.
+- **Per-client readiness.** Even when the build passes, a client whose required reports did not all arrive is flagged in the team summary instead of being sent zeros.
+- **Dynamic task mapping.** One delivery task per client: a failing client is retried on its own and never blocks the others.
+- **Retry rounds in extract.** Flaky Amazon reports are retried in rounds; configuration errors (unsupported marketplace) are not retried.
+- **Retries and failure alerts** on every task; full run history in the Airflow UI.
 
 ---
 
 ## Demo mode: no real client data
 
-This repository is public, so it never touches real accounts:
+- A **data generator** produces realistic Amazon Ads and SP-API reports in the exact production column formats for fictional brands, including late-arriving attribution so the 14-day logic has something to correct. It is deterministic: the same inputs always give the same data.
+- **Demo delivery never sends email.** Each client email is written to an outbox folder as an `.eml` file that opens in any mail app.
+- **Live mode** (real Amazon APIs, real recipients) is the same code with one setting, `PIPELINE_MODE=live`.
 
-- A **data generator** produces realistic Amazon Ads and SP-API reports in the exact production column formats, for fictional brands ("Demo Brand US", "Demo Brand UK"...), including late-arriving attribution so the 14-day logic has something to correct.
-- **Demo delivery** writes to the author's own test Google Sheets and emails the author, so screenshots show the real thing working.
-- **Live mode** (real Amazon APIs, real recipients) is the same code with a config switch, and is never enabled in this repository.
-
-No credentials are ever committed; everything is read from a local `.env`.
+No credentials are stored in code; everything is read from a git-ignored `.env` and secrets file.
 
 ---
 
-## Planned repository layout
+## Repository layout (private source)
 
 ```
-├── ingestion/          # extract: Amazon API clients + demo data generator
-├── loaders/            # raw Parquet → warehouse (DuckDB / Snowflake)
-├── dbt/                # models, macros, seeds, snapshots, tests
-├── reporting/          # Google Sheets writer, email builder
-├── airflow/
-│   └── dags/           # ads_daily_pipeline, ads_weekly_pipeline
-├── tests/              # pytest: generator, metrics, report builder
-├── docker-compose.yml  # Airflow + Postgres metadata DB
-└── .github/workflows/  # CI: lint, tests, dbt build on DuckDB
+├── ingestion/          # Ads API + SP-API fetchers, demo data generator, raw landing, seed builder
+├── loaders/            # raw Parquet → warehouse raw schema (DuckDB rebuild / Snowflake upsert)
+├── dbt/                # staging, intermediate, marts, macros, seeds, snapshot, tests
+├── reporting/          # quality-gated delivery: Excel workbook, Google Sheets, email
+├── airflow/dags/       # ads_daily_report, ads_weekly_report (one mapped task per client)
+├── config/             # clients.yml control plane (+ git-ignored secrets)
+├── run.py              # whole pipeline in order, without Airflow
+└── docker-compose.yml  # Airflow + Postgres
 ```
 
 ---
 
 ## Roadmap
 
-- [ ] **Phase 1: Ingestion.** Demo data generator in exact Amazon schemas for all six reports (SP and SD advertised product, business report, orders, FBA inventory, inventory health); extract step writing partitioned Parquet
-- [ ] **Phase 2: Warehouse + dbt.** Raw load to DuckDB; staging, intermediate and mart models; metric macros; tests; snapshots; docs and lineage
-- [ ] **Phase 3: Reporting.** Google Sheets writer and email builder for daily and weekly reports
-- [ ] **Phase 4: Orchestration.** Airflow daily and weekly DAGs with quality gate and per-client mapping, running in Docker
-- [ ] **Phase 5: Snowflake.** Switchable Snowflake target, roles and schemas, same dbt project
-- [ ] **Phase 6: CI/CD.** GitHub Actions running lint, pytest and `dbt build` on every push
-- [ ] **Phase 7: Showcase.** dbt docs site, lineage graph, Airflow and Snowflake screenshots, demo video
+- [x] **Phase 1: Ingestion.** Live fetchers for all six reports with retry rounds and token refresh; demo generator in the exact Amazon schemas; partitioned raw Parquet landing
+- [x] **Phase 2: Warehouse + dbt.** Raw load to DuckDB; staging, intermediate and mart models; metric macros; data tests; SCD2 snapshot
+- [x] **Phase 3: Reporting.** Quality-gated delivery: Excel workbook (ASIN · Latest · Category), Google Sheets, email summary vs previous period
+- [x] **Phase 4: Orchestration.** Airflow daily and weekly DAGs with dbt as the quality gate and one mapped task per client, in Docker
+- [x] **Phase 5: Snowflake.** Switchable Snowflake target (raw upsert + same dbt project)
+- [ ] **Phase 6: Run evidence.** dbt docs and lineage graph, sample report screenshots, Airflow run history
+- [ ] **Phase 7: CI.** Automated lint, unit tests and `dbt build` on every change
 
 ---
 
