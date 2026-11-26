@@ -234,7 +234,7 @@ No credentials are ever committed; everything is read from a local `.env`.
 ## Related work
 
 - [amazon-ads-reporting-pipelines](https://github.com/Jyoti-op/amazon-ads-reporting-pipelines): the original production pipelines this project rebuilds.
-- [amazon-ads-ai-agent](https://github.com/Jyoti-op/amazon-ads-ai-agent): AI agent platform (MCP, 67 tools) on top of an S3 data lake.
+- [amazon-ads-ai-agent-platform](https://github.com/Jyoti-op/amazon-ads-ai-agent-platform): AI agent platform (MCP, 67 tools) on top of an S3 data lake.
 
 ---
 
